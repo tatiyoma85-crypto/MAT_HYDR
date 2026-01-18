@@ -1,0 +1,633 @@
+import tkinter as tk
+from tkinter import ttk, filedialog
+import sympy as sp
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
+import pandas as pd
+from PIL import Image, ImageTk
+from mpl_toolkits.mplot3d import Axes3D
+
+# ======================================================
+# VARIABLES SIMBÓLICAS
+# ======================================================
+x, y = sp.symbols('x y')
+
+# ======================================================
+# MODELOS DE AJUSTE
+# ======================================================
+def linear(x, a, b): return a*x + b
+def quadratic(x, a, b, c): return a*x**2 + b*x + c
+def exponential(x, a, b): return a*np.exp(b*x)
+def logarithmic(x, a, b): return a*np.log(x) + b
+
+def plane(X, a, b, c):
+    x, y = X
+    return a*x + b*y + c
+
+modelos_2d = {
+    "Lineal": (linear, "y = a·x + b"),
+    "Cuadrático": (quadratic, "y = a·x² + b·x + c"),
+    "Exponencial": (exponential, "y = a·e^(b·x)"),
+    "Logarítmico": (logarithmic, "y = a·ln(x) + b")
+}
+
+# ======================================================
+# MÉTRICAS
+# ======================================================
+def rmse(y, yp): return np.sqrt(np.mean((y-yp)**2))
+
+def r2(y, yp):
+    ssr = np.sum((y-yp)**2)
+    sst = np.sum((y-np.mean(y))**2)
+    return 1 - ssr/sst
+
+# ======================================================
+# UTILIDADES
+# ======================================================
+def procesar_funcion(txt):
+    txt = txt.lower().replace(" ", "")
+    if txt.startswith(("y=", "z=")):
+        txt = txt[2:]
+    return txt.replace("^", "**")
+
+def mostrar_error(msg):
+    w = tk.Toplevel()
+    w.title("Error")
+    w.geometry("600x300")
+    tk.Label(w, text="⚠ Error detectado",
+             fg="red", font=("Arial", 12, "bold")).pack(pady=10)
+    tk.Label(w, text=msg, wraplength=560,
+             justify="left").pack(pady=10)
+    tk.Button(w, text="Cerrar", command=w.destroy).pack()
+
+# ======================================================
+# >>> AYUDA (PANEL SECUNDARIO)
+# ======================================================
+def mostrar_ayuda():
+    w = tk.Toplevel()
+    w.title("Ayuda - Uso del software")
+    w.geometry("760x620")
+
+    cont = tk.Frame(w)
+    cont.pack(fill="both", expand=True)
+
+    canvas = tk.Canvas(cont)
+    scrollbar = tk.Scrollbar(cont, orient="vertical", command=canvas.yview)
+    frame = tk.Frame(canvas)
+
+    frame.bind("<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    canvas.create_window((0, 0), window=frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    def titulo(t):
+        tk.Label(frame, text=t, font=("Arial", 12, "bold"),
+                 fg="#003366").pack(anchor="w", pady=(10,2))
+
+    def texto(t):
+        tk.Label(frame, text=t, wraplength=720,
+                 justify="left").pack(anchor="w", padx=10)
+
+    titulo("📌 Descripción general")
+    texto(
+        "Este software permite realizar derivadas, segundas derivadas e integrales "
+        "simbólicas, así como visualizar funciones 2D y superficies 3D. "
+        "Además, permite ajustar modelos matemáticos a datos experimentales."
+    )
+
+    titulo("📐 Funciones derivables / integrables (2D)")
+    texto(
+        "Ejemplos:\n"
+        "  • x^2 + 3*x + 5\n"
+        "  • sin(x)\n"
+        "  • exp(x)\n"
+        "  • sqrt(x)\n"
+        "  • x*sin(x) + log(x)\n"
+        "  • a*x^3 + b*x^2 + c*x + d"
+    )
+
+    titulo("🧊 Funciones 3D (z = f(x,y))")
+    texto(
+        "Ejemplos:\n"
+        "  • x^2 + y^2\n"
+        "  • sin(x)*cos(y)\n"
+        "  • exp(-(x^2 + y^2))\n"
+        "  • sqrt(x^2 + y^2)"
+    )
+
+    titulo("🧮 Comandos matemáticos aceptados")
+    texto(
+        "Funciones:\n"
+        "  • sqrt(x)\n"
+        "  • sin(x), cos(x), tan(x)\n"
+        "  • asin(x), acos(x), atan(x)\n"
+        "  • exp(x)\n"
+        "  • log(x)\n\n"
+        "Constantes:\n"
+        "  • pi\n"
+        "  • E"
+    )
+
+    titulo("✍ Reglas de escritura")
+    texto(
+        "  • Multiplicación explícita: 2*x, x*sin(x)\n"
+        "  • Potencias: x^2 o x**2\n"
+        "  • Variables permitidas: x, y\n"
+        "  • No usar sin x → usar sin(x)"
+    )
+
+    titulo("⚠ Errores comunes")
+    texto(
+        "  • 2x ❌  →  2*x ✔\n"
+        "  • sin x ❌ → sin(x) ✔\n"
+        "  • log10(x) ❌ → log(x)"
+    )
+
+    titulo("📊 Ajuste de modelos")
+    texto(
+        "Modelos 2D:\n"
+        "  • Lineal\n"
+        "  • Cuadrático\n"
+        "  • Exponencial\n"
+        "  • Logarítmico\n\n"
+        "Modelo 3D:\n"
+        "  • Plano: z = a·x + b·y + c"
+    )
+
+    tk.Button(frame, text="Cerrar", command=w.destroy).pack(pady=15)
+
+# ======================================================
+# GIF Y LOGO
+# ======================================================
+class GIF:
+    def __init__(self, parent, path):
+        self.frames = []
+        i = 0
+        while True:
+            try:
+                self.frames.append(
+                    tk.PhotoImage(file=path, format=f"gif -index {i}")
+                )
+                i += 1
+            except:
+                break
+        self.i = 0
+        self.lbl = tk.Label(parent)
+        self.lbl.pack(side=tk.LEFT, padx=20)
+        self.animate()
+
+    def animate(self):
+        self.lbl.config(image=self.frames[self.i])
+        self.i = (self.i + 1) % len(self.frames)
+        self.lbl.after(80, self.animate)
+
+class RotatingLogo:
+    def __init__(self, parent, path):
+        self.angle = 0
+        self.img0 = Image.open(path).resize((120,120))
+        self.img = ImageTk.PhotoImage(self.img0)
+        self.lbl = tk.Label(parent, image=self.img)
+        self.lbl.pack(side=tk.RIGHT, padx=20)
+        self.rotate()
+
+    def rotate(self):
+        r = self.img0.rotate(self.angle, expand=True)
+        self.img = ImageTk.PhotoImage(r)
+        self.lbl.config(image=self.img)
+        self.angle = (self.angle + 4) % 360
+        self.lbl.after(60, self.rotate)
+
+# ======================================================
+# REINICIAR
+# ======================================================
+def reiniciar():
+    ent_func.delete(0, tk.END)
+    ent_xmin.delete(0, tk.END)
+    ent_xmax.delete(0, tk.END)
+    resultado.set("")
+    ent_excel.delete(0, tk.END)
+    for cb in (cb_x, cb_y, cb_z):
+        cb.set("")
+        cb["values"] = []
+    usar_z.set(False)
+    tabla.delete(*tabla.get_children())
+
+# ======================================================
+# DERIVADAS / INTEGRALES
+# ======================================================
+def calcular():
+    try:
+        ftxt = procesar_funcion(ent_func.get())
+        xmin, xmax = float(ent_xmin.get()), float(ent_xmax.get())
+
+        if dim.get() == "2D":
+            f = sp.sympify(ftxt)
+            xs = np.linspace(xmin, xmax, 400)
+            f_np = sp.lambdify(x, f, "numpy")
+
+            if oper.get() == "derivar":
+                g = sp.diff(f, x)
+                label = "Primera derivada"
+            elif oper.get() == "segunda":
+                g = sp.diff(f, x, 2)
+                label = "Segunda derivada"
+            else:
+                g = sp.integrate(f, x)
+                label = "Integral"
+
+            g_np = sp.lambdify(x, g, "numpy")
+
+            plt.figure()
+            plt.plot(xs, f_np(xs), label="f(x)")
+            plt.plot(xs, g_np(xs), label=label)
+            plt.legend()
+            plt.grid()
+            plt.show()
+
+            resultado.set(str(g))
+
+        else:
+            f = sp.sympify(ftxt)
+            xs = ys = np.linspace(xmin, xmax, 80)
+            X, Y = np.meshgrid(xs, ys)
+            f_np = sp.lambdify((x,y), f, "numpy")
+            Z = f_np(X, Y)
+
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.plot_surface(X, Y, Z, cmap="viridis")
+            plt.show()
+
+            resultado.set("Superficie 3D calculada")
+
+    except Exception as e:
+        mostrar_error(str(e))
+
+# ======================================================
+# AJUSTE DE MODELOS  ← ÚNICO CAMBIO FUNCIONAL
+# ======================================================
+df_excel = None
+resultados = []
+
+def buscar_excel():
+    global df_excel
+    f = filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
+    if not f:
+        return
+    ent_excel.delete(0, tk.END)
+    ent_excel.insert(0, f)
+    df_excel = pd.read_excel(f)
+    cols = list(df_excel.columns)
+    for cb in (cb_x, cb_y, cb_z):
+        cb["values"] = cols
+
+def ajustar():
+    tabla.delete(*tabla.get_children())
+    resultados.clear()
+
+    try:
+        xcol, ycol, zcol = cb_x.get(), cb_y.get(), cb_z.get()
+        X = df_excel[xcol].values
+        Y = df_excel[ycol].values
+
+        if usar_z.get():
+            Z = df_excel[zcol].values
+            popt,_ = curve_fit(plane, (X, Y), Z)
+
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection="3d")
+            ax.scatter(X, Y, Z)
+
+            Xg, Yg = np.meshgrid(
+                np.linspace(X.min(), X.max(), 30),
+                np.linspace(Y.min(), Y.max(), 30)
+            )
+            Zg = plane((Xg, Yg), *popt)
+            ax.plot_surface(Xg, Yg, Zg, alpha=0.5)
+
+            ax.set_xlabel(xcol)
+            ax.set_ylabel(ycol)
+            ax.set_zlabel(zcol)
+            plt.show()
+            return
+
+        for nombre, (modelo, eq_txt) in modelos_2d.items():
+            try:
+                popt,_ = curve_fit(modelo, X, Y, maxfev=5000)
+                yp = modelo(X, *popt)
+                r2v = r2(Y, yp)
+                rmsev = rmse(Y, yp)
+
+                tabla.insert("", "end",
+                             values=(nombre,
+                                     f"{rmsev:.4f}",
+                                     f"{r2v:.4f}"))
+
+                resultados.append((nombre, rmsev, r2v, popt, eq_txt))
+            except:
+                pass
+
+        mejor = min(resultados, key=lambda k: k[1])
+        modelo = modelos_2d[mejor[0]][0]
+
+        ecuacion = mejor[4]
+        for p, val in zip(["a","b","c","d"], mejor[3]):
+            ecuacion = ecuacion.replace(p, f"{val:.4g}")
+
+        xs = np.linspace(X.min(), X.max(), 300)
+        plt.figure()
+        plt.scatter(X, Y, label="Datos")
+        plt.plot(xs, modelo(xs, *mejor[3]),
+                 label=f"{mejor[0]}\n{ecuacion}\nR²={mejor[2]:.4f}  RMSE={mejor[1]:.4f}")
+
+        plt.xlabel(xcol)
+        plt.ylabel(ycol)
+        plt.title("Mejor modelo de ajuste")
+        plt.legend()
+        plt.grid()
+        plt.show()
+
+    except Exception as e:
+        mostrar_error(str(e))
+
+# ======================================================
+# INTERFAZ
+# ======================================================
+ventana = tk.Tk()
+ventana.title("Análisis Matemático Avanzado desarrollado por el Dr. Ignacio Sacnhez Cohen")
+ventana.geometry("1200x900")
+
+resultado = tk.StringVar()
+
+top = tk.Frame(ventana)
+top.pack()
+
+GIF(top, "DERIVADA.gif")
+
+tk.Button(top, text="❓ Ayuda",
+          font=("Arial",10,"bold"),
+          command=mostrar_ayuda).pack(side=tk.LEFT, padx=10)
+
+RotatingLogo(top, "inifap2.png")
+
+nb = ttk.Notebook(ventana)
+nb.pack(fill="both", expand=True)
+
+# -------- TAB 1 --------
+tab1 = tk.Frame(nb)
+nb.add(tab1, text="Derivadas e Integrales")
+
+tk.Label(tab1, text="Función").pack()
+ent_func = tk.Entry(tab1, width=60)
+ent_func.pack()
+
+dim = tk.StringVar(value="2D")
+tk.Radiobutton(tab1, text="2D", variable=dim, value="2D").pack()
+tk.Radiobutton(tab1, text="3D", variable=dim, value="3D").pack()
+
+r = tk.Frame(tab1)
+r.pack()
+tk.Label(r, text="x min").grid(row=0,column=0)
+ent_xmin = tk.Entry(r,width=8)
+ent_xmin.grid(row=0,column=1)
+tk.Label(r, text="x max").grid(row=0,column=2)
+ent_xmax = tk.Entry(r,width=8)
+ent_xmax.grid(row=0,column=3)
+
+oper = tk.StringVar(value="derivar")
+tk.Radiobutton(tab1, text="Derivar", variable=oper, value="derivar").pack()
+tk.Radiobutton(tab1, text="Segunda derivada", variable=oper, value="segunda").pack()
+tk.Radiobutton(tab1, text="Integrar", variable=oper, value="integrar").pack()
+
+tk.Button(tab1, text="Calcular", command=calcular).pack(pady=(5,10))
+tk.Entry(tab1, textvariable=resultado, width=90, state="readonly").pack(pady=(0,10))
+tk.Button(tab1, text="🔄 Reiniciar", command=reiniciar).pack(pady=(10,0))
+
+# -------- TAB 2 --------
+tab2 = tk.Frame(nb)
+nb.add(tab2, text="Ajuste de Modelos")
+
+ent_excel = tk.Entry(tab2, width=50)
+ent_excel.pack()
+tk.Button(tab2, text="Buscar Excel", command=buscar_excel).pack()
+
+frm = tk.Frame(tab2)
+frm.pack()
+
+tk.Label(frm, text="X").grid(row=0,column=0)
+cb_x = ttk.Combobox(frm)
+cb_x.grid(row=0,column=1)
+
+tk.Label(frm, text="Y").grid(row=0,column=2)
+cb_y = ttk.Combobox(frm)
+cb_y.grid(row=0,column=3)
+
+tk.Label(frm, text="Z").grid(row=0,column=4)
+cb_z = ttk.Combobox(frm)
+cb_z.grid(row=0,column=5)
+
+usar_z = tk.BooleanVar()
+tk.Checkbutton(tab2, text="Usar Z (3D)", variable=usar_z).pack()
+
+tk.Button(tab2, text="Ajustar modelos", command=ajustar).pack()
+
+tabla = ttk.Treeview(tab2,
+                     columns=("Modelo","RMSE","R2"),
+                     show="headings", height=6)
+tabla.heading("Modelo", text="Modelo")
+tabla.heading("RMSE", text="RMSE")
+tabla.heading("R2", text="R²")
+tabla.pack()
+
+# =========================
+# >>> NUEVA PESTAÑA 3: CÁLCULOS HIDRÁULICOS
+# =========================
+
+# ======================================================
+# -------- TAB 3 : CÁLCULOS HIDRÁULICOS ----------------
+# ======================================================
+
+def ayuda_manning():
+    w = tk.Toplevel()
+    w.title("Coeficiente de Rugosidad de Manning")
+    w.geometry("520x420")
+
+    txt = (
+        "Valores típicos del coeficiente de Manning (n)\n\n"
+        "Canales revestidos:\n"
+        "  • Concreto liso................ 0.011 – 0.015\n"
+        "  • Concreto rugoso............... 0.015 – 0.020\n\n"
+        "Canales en tierra:\n"
+        "  • Tierra limpia.................. 0.018 – 0.025\n"
+        "  • Tierra con vegetación ligera... 0.025 – 0.035\n\n"
+        "Canales naturales:\n"
+        "  • Río regular.................... 0.030 – 0.040\n"
+        "  • Río muy rugoso................. 0.040 – 0.070\n\n"
+        "Referencia: Chow, V. T. (1959)"
+    )
+
+    tk.Label(w, text=txt, justify="left",
+             font=("Courier", 10)).pack(padx=20, pady=20)
+
+    tk.Button(w, text="Cerrar", command=w.destroy).pack(pady=10)
+
+
+def dibujar_canal(tipo):
+    plt.figure()
+
+    if tipo == "Rectangular":
+        plt.plot([0, 4, 4, 0, 0], [0, 0, 2, 2, 0])
+        plt.text(2, -0.35, "b", ha="center")
+        plt.text(-0.4, 1, "y", va="center")
+
+    elif tipo == "Trapezoidal":
+        # Trapecio correcto con variables claras
+        plt.plot([1, 3, 5, -1, 1], [0, 0, 2, 2, 0])
+        plt.text(2, -0.35, "b (base menor)", ha="center")
+        plt.text(2, 2.15, "B (base mayor)", ha="center")
+        plt.text(-0.8, 1, "y (altura)", va="center")
+
+    elif tipo == "Triangular":
+        # Triangular volteado
+        plt.plot([-2, 0, 2, -2], [2, 0, 2, 2])
+        plt.text(0, -0.35, "y", ha="center")
+        plt.text(1.3, 1.3, "z")
+
+    plt.gca().set_aspect("equal")
+    plt.title(f"Canal {tipo}")
+    plt.grid()
+    plt.show()
+
+
+def actualizar_campos(*args):
+    geom = cb_geom.get()
+
+    for w in (lbl_b, ent_b, lbl_B, ent_B, lbl_z, ent_z):
+        w.grid_remove()
+
+    if geom == "Rectangular":
+        lbl_b.grid(row=0, column=0)
+        ent_b.grid(row=0, column=1)
+
+    elif geom == "Trapezoidal":
+        lbl_b.grid(row=0, column=0)
+        ent_b.grid(row=0, column=1)
+        lbl_B.grid(row=0, column=2)
+        ent_B.grid(row=0, column=3)
+
+    elif geom == "Triangular":
+        lbl_z.grid(row=0, column=2)
+        ent_z.grid(row=0, column=3)
+
+
+def calcular_hidraulica():
+    try:
+        geom = cb_geom.get()
+        yv = float(ent_yh.get())
+        Sv = float(ent_S.get())
+        nv = float(ent_n.get())
+
+        if geom == "Rectangular":
+            bv = float(ent_b.get())
+            A = bv * yv
+            P = bv + 2 * yv
+
+        elif geom == "Trapezoidal":
+            bv = float(ent_b.get())
+            Bv = float(ent_B.get())
+            A = yv * (bv + Bv) / 2
+            P = bv + 2 * np.sqrt(((Bv - bv)/2)**2 + yv**2)
+
+        elif geom == "Triangular":
+            zv = float(ent_z.get())
+            A = zv * yv**2
+            P = 2 * yv * np.sqrt(1 + zv**2)
+
+        R = A / P
+        V = (1 / nv) * (R ** (2/3)) * np.sqrt(Sv)
+        Q = A * V
+
+        res_h.set(
+            f"Área (A) = {A:.4f} m²\n"
+            f"Perímetro mojado (P) = {P:.4f} m\n"
+            f"Radio hidráulico (R) = {R:.4f} m\n"
+            f"Velocidad (V) = {V:.4f} m/s\n"
+            f"Gasto (Q) = {Q:.4f} m³/s"
+        )
+
+    except Exception as e:
+        mostrar_error(str(e))
+
+
+def borrar_hidraulica():
+    for e in (ent_b, ent_B, ent_z, ent_yh, ent_S, ent_n):
+        e.delete(0, tk.END)
+    res_h.set("")
+
+
+tab3 = tk.Frame(nb)
+nb.add(tab3, text="Cálculos Hidráulicos")
+
+tk.Label(tab3, text="Geometría del canal").pack(pady=5)
+
+cb_geom = ttk.Combobox(
+    tab3,
+    values=["Rectangular", "Trapezoidal", "Triangular"],
+    state="readonly"
+)
+cb_geom.pack()
+cb_geom.set("Rectangular")
+cb_geom.bind("<<ComboboxSelected>>", actualizar_campos)
+
+tk.Button(tab3, text="Ver geometría",
+          command=lambda: dibujar_canal(cb_geom.get())).pack(pady=5)
+
+frm_h = tk.Frame(tab3)
+frm_h.pack(pady=10)
+
+lbl_b = tk.Label(frm_h, text="b (base menor)")
+ent_b = tk.Entry(frm_h, width=10)
+
+lbl_B = tk.Label(frm_h, text="B (base mayor)")
+ent_B = tk.Entry(frm_h, width=10)
+
+lbl_z = tk.Label(frm_h, text="z")
+ent_z = tk.Entry(frm_h, width=10)
+
+tk.Label(frm_h, text="y (altura)").grid(row=1, column=0)
+ent_yh = tk.Entry(frm_h, width=10)
+ent_yh.grid(row=1, column=1)
+
+tk.Label(frm_h, text="Pendiente S").grid(row=1, column=2)
+ent_S = tk.Entry(frm_h, width=10)
+ent_S.grid(row=1, column=3)
+
+tk.Label(frm_h, text="Manning n").grid(row=2, column=0)
+ent_n = tk.Entry(frm_h, width=10)
+ent_n.grid(row=2, column=1)
+
+actualizar_campos()
+
+tk.Button(tab3, text="Ayuda coeficiente de Manning",
+          command=ayuda_manning).pack(pady=5)
+
+tk.Button(tab3, text="Calcular",
+          command=calcular_hidraulica).pack(pady=5)
+
+tk.Button(tab3, text="Borrar",
+          command=borrar_hidraulica).pack(pady=5)
+
+res_h = tk.StringVar()
+tk.Label(tab3, textvariable=res_h,
+         justify="left", font=("Courier", 10)).pack(pady=10)
+
+#############AFORO POZOS###############
+
+
+
+ventana.mainloop()
